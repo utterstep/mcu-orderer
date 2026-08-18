@@ -2,6 +2,7 @@ import { MOVIES, CATALOG_SIZE } from './movies.js';
 import { encode, decode } from './codec.js';
 
 const STORAGE_KEY = 'mcu-orderer:v1';
+const STATS_KEY = 'mcu-orderer:stats:v1';
 
 export function pristineState() {
   return { ranked: MOVIES.map(m => m.id), unranked: [] };
@@ -27,6 +28,29 @@ export function loadLocal() {
   } catch {
     return null;
   }
+}
+
+// Per-movie battle statistics (battle count + loss count), persisted so a
+// reload doesn't make every movie provisional again and re-trigger placement
+// jumps on an already-settled ranking. Not part of the shareable fragment.
+export function loadStats() {
+  const counts = new Map();
+  const losses = new Map();
+  try {
+    const raw = JSON.parse(localStorage.getItem(STATS_KEY));
+    for (let id = 0; id < CATALOG_SIZE; id++) {
+      counts.set(id, Number(raw?.c?.[id]) || 0);
+      losses.set(id, Number(raw?.l?.[id]) || 0);
+    }
+  } catch { /* fall through to zeroed maps */ }
+  return { counts, losses };
+}
+
+export function saveStats(counts, losses) {
+  const arr = map => Array.from({ length: CATALOG_SIZE }, (_, id) => map.get(id) ?? 0);
+  try {
+    localStorage.setItem(STATS_KEY, JSON.stringify({ c: arr(counts), l: arr(losses) }));
+  } catch { /* private mode etc. */ }
 }
 
 export function readFragment() {

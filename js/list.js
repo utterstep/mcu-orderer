@@ -122,7 +122,7 @@ export class RankingList {
       const id = Number(row.dataset.id);
       const inUnranked = row.parentNode === this.unrankedEl;
       const index = [...row.parentNode.children].indexOf(row);
-      this.store.move(id, inUnranked, index, { cause: 'drag' });
+      this.store.move(id, inUnranked, index, { cause: 'drag', id });
     };
 
     for (const listEl of [this.rankedEl, this.unrankedEl]) {

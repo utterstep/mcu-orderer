@@ -6,6 +6,27 @@ export const BASE_RATING = 1200;
 export const SEED_SPREAD = 24;
 export const K = 48;
 
+// Placement phase: a movie's first battles are binary-search probes rather
+// than Elo nudges, so anything can escape its seeded position in a handful of
+// votes (Elo alone caps movement at ~K per win, which imprisons bottom-seeded
+// movies under an ~888-point ladder). A movie stays provisional until its
+// first loss, but always gets at least MIN_PLACE and at most MAX_PLACE
+// placement battles.
+export const MIN_PLACE = 2;
+export const MAX_PLACE = 5;
+
+export function isProvisional(count, lossCount) {
+  return count < MIN_PLACE || (lossCount === 0 && count < MAX_PLACE);
+}
+
+// Positional jump for a provisional movie: land just beside the opponent.
+// A win never moves it down, a loss never moves it up.
+export function placementRating(own, opponent, won) {
+  return won
+    ? Math.max(own, opponent + SEED_SPREAD / 2)
+    : Math.min(own, opponent - SEED_SPREAD / 2);
+}
+
 // ranked: array of ids, best first → Map(id → rating), evenly spread.
 export function seedRatings(ranked) {
   const n = ranked.length;

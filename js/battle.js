@@ -1,6 +1,9 @@
 import { MOVIES } from './movies.js';
-import { seedRatings, updateRatings, orderByRating } from './elo.js';
-import { pickPair } from './matchmaking.js';
+import {
+  seedRatings, updateRatings, placementRating, orderByRating, MIN_PLACE,
+} from './elo.js';
+import { pickPair, pickPlacer } from './matchmaking.js';
+import { loadStats, saveStats } from './state.js';
 import { makeLogo } from './logo.js';
 
 const SWIPE_THRESHOLD = 70; // px of horizontal drag that commits a vote
@@ -14,7 +17,7 @@ export class Battle {
     this.cards = [...section.querySelectorAll('.battle-card')];
     this.countEl = section.querySelector('#battle-count');
     this.ratings = seedRatings(store.state.ranked);
-    this.counts = new Map();
+    ({ counts: this.counts, losses: this.losses } = loadStats());
     this.battleCount = 0;
     this.pair = null;
     this.locked = false; // ignore input during fly-out animation
@@ -34,15 +37,26 @@ export class Battle {
     this.ratings = seedRatings(this.store.state.ranked);
     if (clearCounts) {
       this.counts = new Map();
+      this.losses = new Map();
+      saveStats(this.counts, this.losses);
       this.battleCount = 0;
       this.updateCount();
     }
     this.next();
   }
 
+  // A manual drag is definitive information: end the movie's placement phase
+  // so battles refine around the dragged position instead of teleporting it.
+  establish(id) {
+    this.counts.set(id, Math.max(this.counts.get(id) ?? 0, MIN_PLACE));
+    this.losses.set(id, Math.max(this.losses.get(id) ?? 0, 1));
+    saveStats(this.counts, this.losses);
+  }
+
   next() {
     this.pair = pickPair(
-      this.store.state.ranked, this.ratings, this.counts, this.pair, Math.random,
+      this.store.state.ranked, this.ratings, this.counts, this.losses,
+      this.pair, Math.random,
     );
     const arena = this.section.querySelector('.arena');
     const hint = this.section.querySelector('.battle-hint:not(.battle-empty)');
@@ -67,9 +81,21 @@ export class Battle {
     if (this.locked || !this.pair) return;
     this.locked = true;
     const [winner, loser] = side === 0 ? this.pair : [this.pair[1], this.pair[0]];
-    const [rw, rl] = updateRatings(this.ratings.get(winner), this.ratings.get(loser));
-    this.ratings.set(winner, rw).set(loser, rl);
+    const placer = pickPlacer(this.pair, this.ratings, this.counts, this.losses);
+    const [nw, nl] = updateRatings(this.ratings.get(winner), this.ratings.get(loser));
+    if (placer === null) {
+      this.ratings.set(winner, nw).set(loser, nl);
+    } else {
+      // Provisional movie jumps beside its opponent; the opponent only takes
+      // the gentle Elo delta, so an established order can't be wrecked.
+      const opp = this.pair[0] === placer ? this.pair[1] : this.pair[0];
+      const oppBefore = this.ratings.get(opp);
+      this.ratings.set(opp, opp === winner ? nw : nl);
+      this.ratings.set(placer, placementRating(this.ratings.get(placer), oppBefore, placer === winner));
+    }
     for (const id of this.pair) this.counts.set(id, (this.counts.get(id) ?? 0) + 1);
+    this.losses.set(loser, (this.losses.get(loser) ?? 0) + 1);
+    saveStats(this.counts, this.losses);
     this.battleCount++;
     this.updateCount();
 
@@ -87,7 +113,18 @@ export class Battle {
   }
 
   updateCount() {
-    this.countEl.textContent = `${this.battleCount} battle${this.battleCount === 1 ? '' : 's'}`;
+    let text = `${this.battleCount} battle${this.battleCount === 1 ? '' : 's'}`;
+    // Confidence hint: expected average rank error for this many total votes,
+    // fitted from simulations of the placement+Elo scheme on 38 movies
+    // (error ≈ 11.5·e^(−total/170)). Drags/adopts count via persisted stats.
+    let total = 0;
+    for (const c of this.counts.values()) total += c;
+    total = Math.floor(total / 2);
+    if (total >= 10) {
+      const wiggle = Math.round(11.5 * Math.exp(-total / 170));
+      text += wiggle <= 1 ? ' · ranking dialed in' : ` · roughly ±${wiggle} slots`;
+    }
+    this.countEl.textContent = text;
   }
 
   wireCard(card, side) {

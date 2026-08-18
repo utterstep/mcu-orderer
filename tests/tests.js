@@ -1,6 +1,11 @@
 import { encode, decode } from '../js/codec.js';
-import { seedRatings, expectedScore, updateRatings, orderByRating, BASE_RATING, SEED_SPREAD, K } from '../js/elo.js';
-import { pickPair } from '../js/matchmaking.js';
+import {
+  seedRatings, expectedScore, updateRatings, orderByRating,
+  isProvisional, placementRating,
+  BASE_RATING, SEED_SPREAD, K, MIN_PLACE, MAX_PLACE,
+} from '../js/elo.js';
+import { pickPair, pickPlacer } from '../js/matchmaking.js';
+import { loadStats, saveStats } from '../js/state.js';
 import { MOVIES, CATALOG_SIZE } from '../js/movies.js';
 
 // --- tiny harness ---------------------------------------------------------
@@ -159,34 +164,85 @@ test('elo: a battle win reorders adjacent movies', () => {
   assertEq(orderByRating(ranked, ratings), [0, 2, 1, 3]);
 });
 
+// --- placement ------------------------------------------------------------
+
+test('placement: provisional until first loss, min 2, max 5 battles', () => {
+  assert(isProvisional(0, 0) && isProvisional(1, 0) && isProvisional(1, 1));
+  assert(isProvisional(4, 0), 'undefeated stays provisional');
+  assert(!isProvisional(MAX_PLACE, 0), 'placement capped');
+  assert(!isProvisional(MIN_PLACE, 1), 'a loss after min battles establishes');
+});
+
+test('placement: rating jumps beside the opponent, never the wrong way', () => {
+  assertEq(placementRating(1200, 1600, true), 1600 + SEED_SPREAD / 2);
+  assertEq(placementRating(1200, 1600, false), 1200, 'loss never lifts');
+  assertEq(placementRating(1600, 1200, false), 1200 - SEED_SPREAD / 2);
+  assertEq(placementRating(1600, 1200, true), 1600, 'win never drops');
+});
+
+test('placement: a fresh movie probes the middle of the field', () => {
+  const ids = allIds;
+  const ratings = seedRatings(ids);
+  const counts = new Map(ids.map(id => [id, MAX_PLACE]));
+  const losses = new Map(ids.map(id => [id, 1]));
+  counts.set(37, 0); losses.set(37, 0); // one unplaced movie at the bottom
+  const rng = prng(5);
+  for (let i = 0; i < 25; i++) {
+    const p = pickPair(ids, ratings, counts, losses, null, rng);
+    assert(p.includes(37), 'the provisional movie battles first');
+    const opp = p[0] === 37 ? p[1] : p[0];
+    const rank = orderByRating(ids, ratings).indexOf(opp);
+    assert(Math.abs(rank - 19) <= 3, `probe near median, got rank ${rank + 1}`);
+  }
+});
+
+test('placement: pickPlacer chooses the provisional / lower-count side', () => {
+  const ratings = new Map([[0, 1500], [1, 1300]]);
+  const est = new Map([[0, MAX_PLACE], [1, MAX_PLACE]]);
+  const lost = new Map([[0, 1], [1, 1]]);
+  assertEq(pickPlacer([0, 1], ratings, est, lost), null, 'both established:');
+  assertEq(pickPlacer([0, 1], ratings, new Map([[0, MAX_PLACE], [1, 0]]), lost), 1);
+  assertEq(pickPlacer([0, 1], ratings, new Map([[0, 1], [1, 0]]), new Map()), 1, 'lower count:');
+  assertEq(pickPlacer([0, 1], ratings, new Map(), new Map()), 1, 'tie → lower rating:');
+});
+
 // --- matchmaking ----------------------------------------------------------
+
+const established = ids => ({
+  counts: new Map(ids.map(id => [id, MAX_PLACE])),
+  losses: new Map(ids.map(id => [id, 1])),
+});
 
 test('matchmaking: needs two movies', () => {
   const r = new Map([[0, 1200]]);
-  assertEq(pickPair([0], r, new Map(), null, prng(1)), null);
-  assertEq(pickPair([], r, new Map(), null, prng(1)), null);
+  assertEq(pickPair([0], r, new Map(), new Map(), null, prng(1)), null);
+  assertEq(pickPair([], r, new Map(), new Map(), null, prng(1)), null);
 });
 
 test('matchmaking: two movies works even when they were the last pair', () => {
   const r = new Map([[0, 1200], [1, 1224]]);
-  const p = pickPair([0, 1], r, new Map(), [0, 1], prng(1));
-  assertEq([...p].sort(), [0, 1]);
+  for (const { counts, losses } of [established([0, 1]), { counts: new Map(), losses: new Map() }]) {
+    const p = pickPair([0, 1], r, counts, losses, [0, 1], prng(1));
+    assertEq([...p].sort(), [0, 1]);
+  }
 });
 
 test('matchmaking: never repeats last pair when alternatives exist', () => {
   const ids = allIds;
   const ratings = seedRatings(ids);
   const counts = new Map();
+  const losses = new Map();
   let last = null;
   const rng = prng(42);
   for (let i = 0; i < 300; i++) {
-    const p = pickPair(ids, ratings, counts, last, rng);
+    const p = pickPair(ids, ratings, counts, losses, last, rng);
     assert(p !== null);
     assert(p[0] !== p[1], 'distinct movies');
     if (last) {
       assert(!(new Set(last).has(p[0]) && new Set(last).has(p[1])), `repeat at ${i}`);
     }
     for (const id of p) counts.set(id, (counts.get(id) ?? 0) + 1);
+    losses.set(p[0], (losses.get(p[0]) ?? 0) + 1); // arbitrary loser
     last = p;
   }
 });
@@ -195,25 +251,108 @@ test('matchmaking: only offered ids are picked', () => {
   const ids = [4, 9, 17];
   const ratings = new Map([[4, 1200], [9, 1210], [17, 1500]]);
   const rng = prng(3);
-  for (let i = 0; i < 50; i++) {
-    const p = pickPair(ids, ratings, new Map(), null, rng);
-    assert(ids.includes(p[0]) && ids.includes(p[1]));
+  for (const { counts, losses } of [established(ids), { counts: new Map(), losses: new Map() }]) {
+    for (let i = 0; i < 50; i++) {
+      const p = pickPair(ids, ratings, counts, losses, null, rng);
+      assert(ids.includes(p[0]) && ids.includes(p[1]));
+    }
   }
 });
 
 test('matchmaking: battle counts spread coverage across the field', () => {
   const ids = allIds;
   const ratings = seedRatings(ids);
-  const counts = new Map();
+  const { counts, losses } = established(ids);
   let last = null;
   const rng = prng(11);
+  const seen = new Map();
   for (let i = 0; i < 200; i++) {
-    const p = pickPair(ids, ratings, counts, last, rng);
-    for (const id of p) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const p = pickPair(ids, ratings, counts, losses, last, rng);
+    for (const id of p) {
+      counts.set(id, counts.get(id) + 1);
+      seen.set(id, (seen.get(id) ?? 0) + 1);
+    }
     last = p;
   }
-  const touched = ids.filter(id => (counts.get(id) ?? 0) > 0).length;
+  const touched = ids.filter(id => (seen.get(id) ?? 0) > 0).length;
   assert(touched >= ids.length * 0.9, `only ${touched}/${ids.length} movies ever battled`);
+});
+
+// --- battle-flow simulation (the real modules end to end) ------------------
+
+function simulateSession({ prefPos, battles, rng }) {
+  const ids = allIds;
+  const ratings = seedRatings(ids); // release-order seed, as in the app
+  const counts = new Map();
+  const losses = new Map();
+  let pair = null;
+  for (let t = 0; t < battles; t++) {
+    pair = pickPair(ids, ratings, counts, losses, pair, rng);
+    const [a, b] = pair;
+    const winner = prefPos.get(a) < prefPos.get(b) ? a : b;
+    const loser = winner === a ? b : a;
+    const placer = pickPlacer(pair, ratings, counts, losses);
+    const [nw, nl] = updateRatings(ratings.get(winner), ratings.get(loser));
+    if (placer === null) {
+      ratings.set(winner, nw).set(loser, nl);
+    } else {
+      const opp = pair[0] === placer ? pair[1] : pair[0];
+      const oppBefore = ratings.get(opp);
+      ratings.set(opp, opp === winner ? nw : nl);
+      ratings.set(placer, placementRating(ratings.get(placer), oppBefore, placer === winner));
+    }
+    for (const id of pair) counts.set(id, (counts.get(id) ?? 0) + 1);
+    losses.set(loser, (losses.get(loser) ?? 0) + 1);
+  }
+  return orderByRating(ids, ratings);
+}
+
+test('simulation: a beloved bottom-seeded movie escapes to the top 10 in 150 battles', () => {
+  // The user's true #1 is the newest movie (seeded at rank 38); everything
+  // else follows release order. This is the exact scenario that motivated the
+  // placement mechanic — plain Elo left it around rank 30 here.
+  const prefPos = new Map(allIds.map(id => [id, id === 37 ? -1 : id]));
+  for (const seed of [1, 2, 3]) {
+    const order = simulateSession({ prefPos, battles: 150, rng: prng(seed) });
+    const rank = order.indexOf(37) + 1;
+    assert(rank <= 10, `seed ${seed}: still at rank ${rank}`);
+  }
+});
+
+test('simulation: 300 battles reach ≥85% pairwise agreement on a random preference', () => {
+  for (const seed of [7, 8]) {
+    const rng = prng(seed);
+    const truth = shuffled(allIds, rng);
+    const prefPos = new Map(truth.map((id, i) => [id, i]));
+    const order = simulateSession({ prefPos, battles: 300, rng });
+    const pos = new Map(order.map((id, i) => [id, i]));
+    let good = 0;
+    let total = 0;
+    for (const x of allIds) {
+      for (const y of allIds) {
+        if (x >= y) continue;
+        total++;
+        const trueOrder = prefPos.get(x) < prefPos.get(y);
+        if (trueOrder === (pos.get(x) < pos.get(y))) good++;
+      }
+    }
+    assert(good / total >= 0.85, `seed ${seed}: only ${(good / total * 100).toFixed(1)}%`);
+  }
+});
+
+// --- stats persistence ----------------------------------------------------
+
+test('stats: save/load round-trip with defaults for missing movies', () => {
+  const counts = new Map([[0, 3], [37, 1]]);
+  const losses = new Map([[0, 1]]);
+  saveStats(counts, losses);
+  const loaded = loadStats();
+  assertEq(loaded.counts.get(0), 3);
+  assertEq(loaded.counts.get(37), 1);
+  assertEq(loaded.counts.get(5), 0, 'missing defaults to 0:');
+  assertEq(loaded.losses.get(0), 1);
+  assertEq(loaded.losses.get(37), 0);
+  localStorage.removeItem('mcu-orderer:stats:v1');
 });
 
 // --- report ---------------------------------------------------------------

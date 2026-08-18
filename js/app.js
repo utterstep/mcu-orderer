@@ -1,5 +1,6 @@
-import { MOVIES } from './movies.js';
-import { Store, pristineState, statesEqual, loadLocal, readFragment } from './state.js';
+import { MOVIES, CATALOG_SIZE } from './movies.js';
+import { MAX_PLACE } from './elo.js';
+import { Store, pristineState, statesEqual, loadLocal, readFragment, saveStats } from './state.js';
 import { Battle } from './battle.js';
 import { RankingList } from './list.js';
 
@@ -58,6 +59,10 @@ if (viewing) {
 
   $('#fork-adopt').addEventListener('click', () => {
     store.persist(); // write this state to localStorage + keep the fragment
+    // The adopted order was deliberate: mark every movie as already placed so
+    // subsequent battles refine it gently instead of teleporting entries.
+    const ids = [...Array(CATALOG_SIZE).keys()];
+    saveStats(new Map(ids.map(id => [id, MAX_PLACE])), new Map(ids.map(id => [id, 1])));
     location.reload(); // reboots into normal editing mode (fragment == local)
   });
   forkOwn.addEventListener('click', () => {
@@ -95,6 +100,7 @@ if (viewing) {
 
   store.subscribe((_state, meta) => {
     list.render({ animate: true });
+    if (meta.cause === 'drag' && meta.id !== undefined) battle.establish(meta.id);
     if (meta.cause !== 'battle') battle.reseed({ clearCounts: meta.cause === 'reset' });
   });
 

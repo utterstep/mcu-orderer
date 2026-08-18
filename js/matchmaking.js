@@ -1,23 +1,61 @@
-// Smart pair selection: prefer matchups between movies with similar current
-// ratings (high information) and few past battles, with a bit of injected
-// randomness so sessions don't feel deterministic.
+// Pair selection.
+//
+// While any movie is provisional (see elo.js), matchmaking runs its placement:
+// the least-battled provisional movie probes binary-search style — first
+// against the median, then halfway toward the top while it keeps winning, or
+// halfway toward the bottom once it has lost. Afterwards, refinement pairs
+// movies with similar current ratings (high information) and few past battles,
+// with a bit of injected randomness so sessions don't feel deterministic.
+
+import { isProvisional } from './elo.js';
 
 const WINDOW = 5; // how many rating-neighbors each movie is considered against
 const COUNT_PENALTY = 18; // rating-points-equivalent cost per past battle
 const TOP_POOL = 5; // pick uniformly among this many best candidates
+const JITTER = 2; // ± ranks of noise on a placement probe target
 
-// ids: rankable movie ids; ratings: Map(id → rating); counts: Map(id → battles);
-// lastPair: [idA, idB] or null; rng: () => [0,1). Returns [idA, idB] or null.
-export function pickPair(ids, ratings, counts, lastPair, rng) {
+const samePair = (a, b) => b && new Set(b).has(a[0]) && new Set(b).has(a[1]);
+
+// ids: rankable movie ids; ratings: Map(id → rating); counts/losses:
+// Map(id → n); lastPair: [idA, idB] or null; rng: () => [0,1).
+// Returns [idA, idB] or null.
+export function pickPair(ids, ratings, counts, losses, lastPair, rng) {
   if (ids.length < 2) return null;
-  const sorted = [...ids].sort((a, b) => ratings.get(b) - ratings.get(a));
-  const last = lastPair ? new Set(lastPair) : null;
+  const order = [...ids].sort((a, b) => ratings.get(b) - ratings.get(a));
+
+  const provisionals = ids.filter(id =>
+    isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0));
+  if (provisionals.length) {
+    const minCount = Math.min(...provisionals.map(id => counts.get(id) ?? 0));
+    const pool = provisionals.filter(id => (counts.get(id) ?? 0) === minCount);
+    const placer = pool[Math.floor(rng() * pool.length)];
+
+    const n = order.length;
+    const r = order.indexOf(placer);
+    let target;
+    if ((counts.get(placer) ?? 0) === 0) target = Math.floor(n / 2);
+    else if ((losses.get(placer) ?? 0) === 0) target = Math.floor(r / 2);
+    else target = Math.floor((r + n) / 2);
+    target += Math.floor(rng() * (2 * JITTER + 1)) - JITTER;
+    target = Math.max(0, Math.min(n - 1, target));
+
+    // Nearest rank to the target that isn't the placer or the previous pair.
+    for (const off of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]) {
+      const opp = order[target + off];
+      if (opp === undefined || opp === placer) continue;
+      if (samePair([placer, opp], lastPair) && n > 2) continue;
+      return rng() < 0.5 ? [placer, opp] : [opp, placer];
+    }
+    // Degenerate field (e.g. two movies that just battled): allow the repeat.
+    const opp = order.find(id => id !== placer);
+    return rng() < 0.5 ? [placer, opp] : [opp, placer];
+  }
 
   const candidates = [];
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < Math.min(i + 1 + WINDOW, sorted.length); j++) {
-      const [a, b] = [sorted[i], sorted[j]];
-      if (last && last.has(a) && last.has(b)) continue;
+  for (let i = 0; i < order.length; i++) {
+    for (let j = i + 1; j < Math.min(i + 1 + WINDOW, order.length); j++) {
+      const [a, b] = [order[i], order[j]];
+      if (samePair([a, b], lastPair)) continue;
       const score =
         Math.abs(ratings.get(a) - ratings.get(b)) +
         COUNT_PENALTY * ((counts.get(a) ?? 0) + (counts.get(b) ?? 0));
@@ -31,4 +69,18 @@ export function pickPair(ids, ratings, counts, lastPair, rng) {
   const { pair } = pool[Math.floor(rng() * pool.length)];
   // Randomize sides so the better-rated movie isn't always on the left.
   return rng() < 0.5 ? pair : [pair[1], pair[0]];
+}
+
+// Which side of a pair (if any) takes the placement jump instead of an Elo
+// update: the provisional one; if both are provisional, the lower-count one,
+// ties broken toward the lower-rated.
+export function pickPlacer(pair, ratings, counts, losses) {
+  const [a, b] = pair;
+  const prov = id => isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0);
+  const [pa, pb] = [prov(a), prov(b)];
+  if (!pa && !pb) return null;
+  if (pa !== pb) return pa ? a : b;
+  const key = id => [counts.get(id) ?? 0, ratings.get(id)];
+  const [ka, kb] = [key(a), key(b)];
+  return ka[0] < kb[0] || (ka[0] === kb[0] && ka[1] <= kb[1]) ? a : b;
 }
