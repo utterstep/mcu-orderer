@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCU Orderer</title>
+  <meta name="description" content="Rank every MCU movie — swipe battles or drag-and-drop, share your ranking as a URL.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍿</text></svg>">
+</head>
+<body>
+  <header>
+    <h1>MCU <span>Orderer</span></h1>
+    <p class="tagline">Battle your way to a personal ranking of all 38 films — or just drag them around.</p>
+    <div class="actions">
+      <button id="share" class="btn btn-gold">Share my ranking</button>
+      <button id="reset" class="btn btn-ghost">Reset</button>
+    </div>
+  </header>
+
+  <div id="fork-banner" hidden>
+    <p>You're viewing <strong>someone else's ranking</strong>. It's read-only until you make it yours.</p>
+    <div class="actions">
+      <button id="fork-adopt" class="btn btn-gold">Start from this ranking</button>
+      <button id="fork-own" class="btn btn-ghost" data-label-fresh="Make my own from scratch" data-label-keep="Keep my own ranking">Make my own from scratch</button>
+    </div>
+  </div>
+
+  <main>
+    <section id="battle" aria-label="Battle mode">
+      <h2>Which is better?</h2>
+      <div class="arena">
+        <div class="battle-card" data-side="0">
+          <div class="card-logo"></div>
+          <div class="card-year"></div>
+          <button class="unseen" type="button">haven't seen it</button>
+        </div>
+        <div class="vs" aria-hidden="true">VS</div>
+        <div class="battle-card" data-side="1">
+          <div class="card-logo"></div>
+          <div class="card-year"></div>
+          <button class="unseen" type="button">haven't seen it</button>
+        </div>
+      </div>
+      <p class="battle-hint">tap a card, swipe it, or press <kbd>←</kbd> <kbd>→</kbd> · <span id="battle-count">0 battles</span></p>
+      <p class="battle-empty battle-hint" hidden>Rank at least two movies to battle.</p>
+    </section>
+
+    <section id="ranking" aria-label="Your ranking">
+      <h2>Your ranking</h2>
+      <ol id="ranked-list" class="movie-list"></ol>
+      <h2 id="unranked-head" class="hidden">Haven't seen</h2>
+      <ol id="unranked-list" class="movie-list unranked hidden"></ol>
+    </section>
+  </main>
+
+  <footer>
+    <p>No backend, no tracking — your ranking lives entirely in the URL.
+       Logos © Marvel Studios / The Walt Disney Company, via Wikipedia &amp; the MCU wiki.
+       <a href="https://github.com/utterstep/mcu-orderer">Source on GitHub</a>.</p>
+  </footer>
+
+  <div id="toast" role="status" hidden>
+    <span id="toast-msg"></span>
+    <button id="toast-action" class="btn btn-ghost" hidden></button>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
