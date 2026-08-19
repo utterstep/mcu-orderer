@@ -12,10 +12,13 @@ to *Spider-Man: Brand New Day* (2026) — and share it as a single URL.
   first, then halfway up while it keeps winning) where the movie jumps straight
   to its opponent's neighborhood — so a beloved film escapes the bottom of the
   list in a few votes instead of being trapped by Elo's small step size.
-  After its first loss, gentle Elo refinement with smart matchmaking (close
-  ratings, low battle counts) takes over. The counter shows a confidence
-  estimate ("roughly ±N slots", fitted from simulations); stop whenever the
-  order looks right — there's no fixed number of rounds.
+  After its first loss, gentle Elo refinement with smart matchmaking takes
+  over (close ratings, low battle counts, biased toward the top of the list —
+  the part you actually care about). An established movie that wins three in a
+  row earns fresh upward probes, so one mistaken vote can never exile a film
+  permanently. The counter shows a confidence estimate ("roughly ±N slots",
+  fitted from simulations); stop whenever the order looks right — there's no
+  fixed number of rounds.
 - **Drag-and-drop** — the ranked list is always directly editable; drag rows to
   fix what the battles got wrong. The order is the source of truth: after a
   manual drag, Elo ratings are re-seeded from it.
@@ -29,6 +32,11 @@ to *Spider-Man: Brand New Day* (2026) — and share it as a single URL.
 
 No backend, no build step, no dependencies, no tracking. Plain HTML+CSS+JS,
 hosted on GitHub Pages; state lives in the URL and localStorage.
+
+**Debugging**: add `?debug` to the URL for a live panel with every movie's
+rating, W–L record, streak, and placement phase, plus the full vote history
+(persisted in localStorage, capped at 1000 votes) and a "Copy debug JSON"
+export.
 
 ## Development
 

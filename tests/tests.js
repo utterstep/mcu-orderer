@@ -2,10 +2,10 @@ import { encode, decode } from '../js/codec.js';
 import {
   seedRatings, expectedScore, updateRatings, orderByRating,
   isProvisional, placementRating,
-  BASE_RATING, SEED_SPREAD, K, MIN_PLACE, MAX_PLACE,
+  BASE_RATING, SEED_SPREAD, K, MIN_PLACE, MAX_PLACE, REPLACE_STREAK,
 } from '../js/elo.js';
 import { pickPair, pickPlacer } from '../js/matchmaking.js';
-import { loadStats, saveStats } from '../js/state.js';
+import { loadStats, saveStats, appendHistory, loadHistory, clearHistory } from '../js/state.js';
 import { MOVIES, CATALOG_SIZE } from '../js/movies.js';
 
 // --- tiny harness ---------------------------------------------------------
@@ -173,6 +173,31 @@ test('placement: provisional until first loss, min 2, max 5 battles', () => {
   assert(!isProvisional(MIN_PLACE, 1), 'a loss after min battles establishes');
 });
 
+test('placement: a win streak re-opens placement for an established movie', () => {
+  assert(!isProvisional(20, 8, REPLACE_STREAK - 1), 'short streak stays established');
+  assert(isProvisional(20, 8, REPLACE_STREAK), 'streak earns a new probe');
+});
+
+test('placement: a streaking established movie probes upward', () => {
+  const ids = allIds;
+  const ratings = seedRatings(ids);
+  const stats = {
+    counts: new Map(ids.map(id => [id, MAX_PLACE])),
+    losses: new Map(ids.map(id => [id, 2])),
+    streaks: new Map(ids.map(id => [id, 0])),
+  };
+  const streaker = ids[30]; // low in the order, on a hot streak
+  stats.streaks.set(streaker, REPLACE_STREAK);
+  const rng = prng(9);
+  for (let i = 0; i < 25; i++) {
+    const p = pickPair(ids, ratings, stats, null, rng);
+    assert(p.includes(streaker), 'the streaking movie battles next');
+    const opp = p[0] === streaker ? p[1] : p[0];
+    const rank = orderByRating(ids, ratings).indexOf(opp);
+    assert(rank <= 30 / 2 + 3, `probe should aim upward, got rank ${rank + 1}`);
+  }
+});
+
 test('placement: rating jumps beside the opponent, never the wrong way', () => {
   assertEq(placementRating(1200, 1600, true), 1600 + SEED_SPREAD / 2);
   assertEq(placementRating(1200, 1600, false), 1200, 'loss never lifts');
@@ -180,15 +205,21 @@ test('placement: rating jumps beside the opponent, never the wrong way', () => {
   assertEq(placementRating(1600, 1200, true), 1600, 'win never drops');
 });
 
+const freshStats = () => ({ counts: new Map(), losses: new Map(), streaks: new Map() });
+const established = ids => ({
+  counts: new Map(ids.map(id => [id, MAX_PLACE])),
+  losses: new Map(ids.map(id => [id, 1])),
+  streaks: new Map(ids.map(id => [id, 0])),
+});
+
 test('placement: a fresh movie probes the middle of the field', () => {
   const ids = allIds;
   const ratings = seedRatings(ids);
-  const counts = new Map(ids.map(id => [id, MAX_PLACE]));
-  const losses = new Map(ids.map(id => [id, 1]));
-  counts.set(37, 0); losses.set(37, 0); // one unplaced movie at the bottom
+  const stats = established(ids);
+  stats.counts.set(37, 0); stats.losses.set(37, 0); // one unplaced movie at the bottom
   const rng = prng(5);
   for (let i = 0; i < 25; i++) {
-    const p = pickPair(ids, ratings, counts, losses, null, rng);
+    const p = pickPair(ids, ratings, stats, null, rng);
     assert(p.includes(37), 'the provisional movie battles first');
     const opp = p[0] === 37 ? p[1] : p[0];
     const rank = orderByRating(ids, ratings).indexOf(opp);
@@ -198,31 +229,25 @@ test('placement: a fresh movie probes the middle of the field', () => {
 
 test('placement: pickPlacer chooses the provisional / lower-count side', () => {
   const ratings = new Map([[0, 1500], [1, 1300]]);
-  const est = new Map([[0, MAX_PLACE], [1, MAX_PLACE]]);
-  const lost = new Map([[0, 1], [1, 1]]);
-  assertEq(pickPlacer([0, 1], ratings, est, lost), null, 'both established:');
-  assertEq(pickPlacer([0, 1], ratings, new Map([[0, MAX_PLACE], [1, 0]]), lost), 1);
-  assertEq(pickPlacer([0, 1], ratings, new Map([[0, 1], [1, 0]]), new Map()), 1, 'lower count:');
-  assertEq(pickPlacer([0, 1], ratings, new Map(), new Map()), 1, 'tie → lower rating:');
+  const withCounts = counts => ({ ...established([0, 1]), counts });
+  assertEq(pickPlacer([0, 1], ratings, established([0, 1])), null, 'both established:');
+  assertEq(pickPlacer([0, 1], ratings, withCounts(new Map([[0, MAX_PLACE], [1, 0]]))), 1);
+  assertEq(pickPlacer([0, 1], ratings, { ...freshStats(), counts: new Map([[0, 1], [1, 0]]) }), 1, 'lower count:');
+  assertEq(pickPlacer([0, 1], ratings, freshStats()), 1, 'tie → lower rating:');
 });
 
 // --- matchmaking ----------------------------------------------------------
 
-const established = ids => ({
-  counts: new Map(ids.map(id => [id, MAX_PLACE])),
-  losses: new Map(ids.map(id => [id, 1])),
-});
-
 test('matchmaking: needs two movies', () => {
   const r = new Map([[0, 1200]]);
-  assertEq(pickPair([0], r, new Map(), new Map(), null, prng(1)), null);
-  assertEq(pickPair([], r, new Map(), new Map(), null, prng(1)), null);
+  assertEq(pickPair([0], r, freshStats(), null, prng(1)), null);
+  assertEq(pickPair([], r, freshStats(), null, prng(1)), null);
 });
 
 test('matchmaking: two movies works even when they were the last pair', () => {
   const r = new Map([[0, 1200], [1, 1224]]);
-  for (const { counts, losses } of [established([0, 1]), { counts: new Map(), losses: new Map() }]) {
-    const p = pickPair([0, 1], r, counts, losses, [0, 1], prng(1));
+  for (const stats of [established([0, 1]), freshStats()]) {
+    const p = pickPair([0, 1], r, stats, [0, 1], prng(1));
     assertEq([...p].sort(), [0, 1]);
   }
 });
@@ -230,19 +255,18 @@ test('matchmaking: two movies works even when they were the last pair', () => {
 test('matchmaking: never repeats last pair when alternatives exist', () => {
   const ids = allIds;
   const ratings = seedRatings(ids);
-  const counts = new Map();
-  const losses = new Map();
+  const stats = freshStats();
   let last = null;
   const rng = prng(42);
   for (let i = 0; i < 300; i++) {
-    const p = pickPair(ids, ratings, counts, losses, last, rng);
+    const p = pickPair(ids, ratings, stats, last, rng);
     assert(p !== null);
     assert(p[0] !== p[1], 'distinct movies');
     if (last) {
       assert(!(new Set(last).has(p[0]) && new Set(last).has(p[1])), `repeat at ${i}`);
     }
-    for (const id of p) counts.set(id, (counts.get(id) ?? 0) + 1);
-    losses.set(p[0], (losses.get(p[0]) ?? 0) + 1); // arbitrary loser
+    for (const id of p) stats.counts.set(id, (stats.counts.get(id) ?? 0) + 1);
+    stats.losses.set(p[0], (stats.losses.get(p[0]) ?? 0) + 1); // arbitrary loser
     last = p;
   }
 });
@@ -251,9 +275,9 @@ test('matchmaking: only offered ids are picked', () => {
   const ids = [4, 9, 17];
   const ratings = new Map([[4, 1200], [9, 1210], [17, 1500]]);
   const rng = prng(3);
-  for (const { counts, losses } of [established(ids), { counts: new Map(), losses: new Map() }]) {
+  for (const stats of [established(ids), freshStats()]) {
     for (let i = 0; i < 50; i++) {
-      const p = pickPair(ids, ratings, counts, losses, null, rng);
+      const p = pickPair(ids, ratings, stats, null, rng);
       assert(ids.includes(p[0]) && ids.includes(p[1]));
     }
   }
@@ -262,14 +286,14 @@ test('matchmaking: only offered ids are picked', () => {
 test('matchmaking: battle counts spread coverage across the field', () => {
   const ids = allIds;
   const ratings = seedRatings(ids);
-  const { counts, losses } = established(ids);
+  const stats = established(ids);
   let last = null;
   const rng = prng(11);
   const seen = new Map();
   for (let i = 0; i < 200; i++) {
-    const p = pickPair(ids, ratings, counts, losses, last, rng);
+    const p = pickPair(ids, ratings, stats, last, rng);
     for (const id of p) {
-      counts.set(id, counts.get(id) + 1);
+      stats.counts.set(id, stats.counts.get(id) + 1);
       seen.set(id, (seen.get(id) ?? 0) + 1);
     }
     last = p;
@@ -278,34 +302,90 @@ test('matchmaking: battle counts spread coverage across the field', () => {
   assert(touched >= ids.length * 0.9, `only ${touched}/${ids.length} movies ever battled`);
 });
 
+test('matchmaking: refinement favors the top of the ranking', () => {
+  const ids = allIds;
+  const ratings = seedRatings(ids);
+  const stats = established(ids);
+  const rng = prng(21);
+  let topHalf = 0;
+  const N = 400;
+  for (let i = 0; i < N; i++) {
+    // keep counts equal so only the rank bias differentiates candidates
+    const p = pickPair(ids, ratings, stats, null, rng);
+    const order = orderByRating(ids, ratings);
+    if (order.indexOf(p[0]) < 19 && order.indexOf(p[1]) < 19) topHalf++;
+  }
+  assert(topHalf / N > 0.7, `only ${(topHalf / N * 100).toFixed(0)}% of pairs from the top half`);
+});
+
 // --- battle-flow simulation (the real modules end to end) ------------------
 
 function simulateSession({ prefPos, battles, rng }) {
   const ids = allIds;
   const ratings = seedRatings(ids); // release-order seed, as in the app
-  const counts = new Map();
-  const losses = new Map();
+  const stats = freshStats();
   let pair = null;
   for (let t = 0; t < battles; t++) {
-    pair = pickPair(ids, ratings, counts, losses, pair, rng);
+    pair = pickPair(ids, ratings, stats, pair, rng);
     const [a, b] = pair;
     const winner = prefPos.get(a) < prefPos.get(b) ? a : b;
     const loser = winner === a ? b : a;
-    const placer = pickPlacer(pair, ratings, counts, losses);
-    const [nw, nl] = updateRatings(ratings.get(winner), ratings.get(loser));
-    if (placer === null) {
-      ratings.set(winner, nw).set(loser, nl);
-    } else {
-      const opp = pair[0] === placer ? pair[1] : pair[0];
-      const oppBefore = ratings.get(opp);
-      ratings.set(opp, opp === winner ? nw : nl);
-      ratings.set(placer, placementRating(ratings.get(placer), oppBefore, placer === winner));
-    }
-    for (const id of pair) counts.set(id, (counts.get(id) ?? 0) + 1);
-    losses.set(loser, (losses.get(loser) ?? 0) + 1);
+    applyVote({ pair, winner, loser, ratings, stats });
   }
   return orderByRating(ids, ratings);
 }
+
+// Mirrors Battle.vote()'s update rules exactly (placement jump, Elo delta,
+// streak bookkeeping including the no-op-probe streak reset).
+function applyVote({ pair, winner, loser, ratings, stats }) {
+  const placer = pickPlacer(pair, ratings, stats);
+  const [nw, nl] = updateRatings(ratings.get(winner), ratings.get(loser));
+  let placerMoved = false;
+  if (placer === null) {
+    ratings.set(winner, nw).set(loser, nl);
+  } else {
+    const opp = pair[0] === placer ? pair[1] : pair[0];
+    const oppBefore = ratings.get(opp);
+    const placerBefore = ratings.get(placer);
+    ratings.set(opp, opp === winner ? nw : nl);
+    ratings.set(placer, placementRating(placerBefore, oppBefore, placer === winner));
+    placerMoved = ratings.get(placer) !== placerBefore;
+  }
+  for (const id of pair) stats.counts.set(id, (stats.counts.get(id) ?? 0) + 1);
+  stats.losses.set(loser, (stats.losses.get(loser) ?? 0) + 1);
+  stats.streaks.set(winner, (stats.streaks.get(winner) ?? 0) + 1);
+  stats.streaks.set(loser, 0);
+  if (placer !== null && !placerMoved) stats.streaks.set(placer, 0);
+}
+
+test('simulation: a movie exiled by one bad early vote recovers via win streaks', () => {
+  // True #2 overall, but its FIRST placement probe is thrown (mis-vote), so it
+  // jumps below the median. Every later vote is honest. Without streak
+  // re-placement it could only crawl back at ~2 ranks per rare appearance.
+  const fav = 10;
+  const prefPos = new Map(allIds.map(id => [id, id === fav ? -1 : id]));
+  for (const seed of [1, 2, 3]) {
+    const rng = prng(seed);
+    const ids = allIds;
+    const ratings = seedRatings(ids);
+    const stats = freshStats();
+    let pair = null;
+    let sabotaged = false;
+    for (let t = 0; t < 250; t++) {
+      pair = pickPair(ids, ratings, stats, pair, rng);
+      const [a, b] = pair;
+      let winner = prefPos.get(a) < prefPos.get(b) ? a : b;
+      if (!sabotaged && pair.includes(fav)) {
+        winner = pair[0] === fav ? pair[1] : pair[0]; // the one bad vote
+        sabotaged = true;
+      }
+      const loser = winner === a ? b : a;
+      applyVote({ pair, winner, loser, ratings, stats });
+    }
+    const rank = orderByRating(allIds, ratings).indexOf(fav) + 1;
+    assert(rank <= 8, `seed ${seed}: still exiled at rank ${rank}`);
+  }
+});
 
 test('simulation: a beloved bottom-seeded movie escapes to the top 10 in 150 battles', () => {
   // The user's true #1 is the newest movie (seeded at rank 38); everything
@@ -345,14 +425,36 @@ test('simulation: 300 battles reach ≥85% pairwise agreement on a random prefer
 test('stats: save/load round-trip with defaults for missing movies', () => {
   const counts = new Map([[0, 3], [37, 1]]);
   const losses = new Map([[0, 1]]);
-  saveStats(counts, losses);
+  const streaks = new Map([[37, 2]]);
+  saveStats({ counts, losses, streaks });
   const loaded = loadStats();
   assertEq(loaded.counts.get(0), 3);
   assertEq(loaded.counts.get(37), 1);
   assertEq(loaded.counts.get(5), 0, 'missing defaults to 0:');
   assertEq(loaded.losses.get(0), 1);
   assertEq(loaded.losses.get(37), 0);
+  assertEq(loaded.streaks.get(37), 2);
   localStorage.removeItem('mcu-orderer:stats:v1');
+});
+
+test('stats: pre-streak stats payloads load with zeroed streaks', () => {
+  localStorage.setItem('mcu-orderer:stats:v1',
+    JSON.stringify({ c: [4, 2], l: [1, 0] })); // written by the previous version
+  const loaded = loadStats();
+  assertEq(loaded.counts.get(0), 4);
+  assertEq(loaded.streaks.get(0), 0);
+  localStorage.removeItem('mcu-orderer:stats:v1');
+});
+
+test('history: append/load round-trip, cleared cleanly', () => {
+  clearHistory();
+  appendHistory({ t: 1, a: 0, b: 5, w: 0, p: 0 });
+  appendHistory({ t: 2, a: 3, b: 7, w: 7, p: null });
+  const h = loadHistory();
+  assertEq(h.length, 2);
+  assertEq(h[1], { t: 2, a: 3, b: 7, w: 7, p: null });
+  clearHistory();
+  assertEq(loadHistory(), []);
 });
 
 // --- report ---------------------------------------------------------------

@@ -318,6 +318,29 @@ body.drag-active #unranked-list.hidden {
 #toast .btn { padding: 0.35rem 0.8rem; }
 #toast[hidden] { display: none; }
 
+/* ---------- debug panel (?debug) ---------- */
+
+#debug {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px dashed var(--line);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+#debug .dim { color: var(--text-dim); }
+#debug .debug-cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+@media (min-width: 900px) { #debug .debug-cols { grid-template-columns: 1fr 1fr; } }
+#debug table { border-collapse: collapse; width: 100%; }
+#debug th, #debug td {
+  text-align: left;
+  padding: 0.15rem 0.6rem 0.15rem 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+#debug td:nth-child(2) { white-space: normal; }
+#debug h3 { color: var(--gold-dim); font-weight: 600; margin: 0 0 0.5rem; }
+#debug .debug-history { margin: 0; padding-left: 1.2rem; }
+#debug .debug-history li { margin-bottom: 0.2rem; }
+
 footer {
   margin-top: 3rem;
   color: var(--text-dim);

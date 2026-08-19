@@ -3,7 +3,7 @@ import {
   seedRatings, updateRatings, placementRating, orderByRating, MIN_PLACE,
 } from './elo.js';
 import { pickPair, pickPlacer } from './matchmaking.js';
-import { loadStats, saveStats } from './state.js';
+import { loadStats, saveStats, appendHistory, clearHistory } from './state.js';
 import { makeLogo } from './logo.js';
 
 const SWIPE_THRESHOLD = 70; // px of horizontal drag that commits a vote
@@ -17,7 +17,7 @@ export class Battle {
     this.cards = [...section.querySelectorAll('.battle-card')];
     this.countEl = section.querySelector('#battle-count');
     this.ratings = seedRatings(store.state.ranked);
-    ({ counts: this.counts, losses: this.losses } = loadStats());
+    this.stats = loadStats();
     this.battleCount = 0;
     this.pair = null;
     this.locked = false; // ignore input during fly-out animation
@@ -36,9 +36,9 @@ export class Battle {
   reseed({ clearCounts = false } = {}) {
     this.ratings = seedRatings(this.store.state.ranked);
     if (clearCounts) {
-      this.counts = new Map();
-      this.losses = new Map();
-      saveStats(this.counts, this.losses);
+      this.stats = { counts: new Map(), losses: new Map(), streaks: new Map() };
+      saveStats(this.stats);
+      clearHistory();
       this.battleCount = 0;
       this.updateCount();
     }
@@ -48,15 +48,16 @@ export class Battle {
   // A manual drag is definitive information: end the movie's placement phase
   // so battles refine around the dragged position instead of teleporting it.
   establish(id) {
-    this.counts.set(id, Math.max(this.counts.get(id) ?? 0, MIN_PLACE));
-    this.losses.set(id, Math.max(this.losses.get(id) ?? 0, 1));
-    saveStats(this.counts, this.losses);
+    const { counts, losses, streaks } = this.stats;
+    counts.set(id, Math.max(counts.get(id) ?? 0, MIN_PLACE));
+    losses.set(id, Math.max(losses.get(id) ?? 0, 1));
+    streaks.set(id, 0);
+    saveStats(this.stats);
   }
 
   next() {
     this.pair = pickPair(
-      this.store.state.ranked, this.ratings, this.counts, this.losses,
-      this.pair, Math.random,
+      this.store.state.ranked, this.ratings, this.stats, this.pair, Math.random,
     );
     const arena = this.section.querySelector('.arena');
     const hint = this.section.querySelector('.battle-hint:not(.battle-empty)');
@@ -81,8 +82,9 @@ export class Battle {
     if (this.locked || !this.pair) return;
     this.locked = true;
     const [winner, loser] = side === 0 ? this.pair : [this.pair[1], this.pair[0]];
-    const placer = pickPlacer(this.pair, this.ratings, this.counts, this.losses);
+    const placer = pickPlacer(this.pair, this.ratings, this.stats);
     const [nw, nl] = updateRatings(this.ratings.get(winner), this.ratings.get(loser));
+    let placerMoved = false;
     if (placer === null) {
       this.ratings.set(winner, nw).set(loser, nl);
     } else {
@@ -90,12 +92,22 @@ export class Battle {
       // the gentle Elo delta, so an established order can't be wrecked.
       const opp = this.pair[0] === placer ? this.pair[1] : this.pair[0];
       const oppBefore = this.ratings.get(opp);
+      const placerBefore = this.ratings.get(placer);
       this.ratings.set(opp, opp === winner ? nw : nl);
-      this.ratings.set(placer, placementRating(this.ratings.get(placer), oppBefore, placer === winner));
+      this.ratings.set(placer, placementRating(placerBefore, oppBefore, placer === winner));
+      placerMoved = this.ratings.get(placer) !== placerBefore;
     }
-    for (const id of this.pair) this.counts.set(id, (this.counts.get(id) ?? 0) + 1);
-    this.losses.set(loser, (this.losses.get(loser) ?? 0) + 1);
-    saveStats(this.counts, this.losses);
+    const { counts, losses, streaks } = this.stats;
+    for (const id of this.pair) counts.set(id, (counts.get(id) ?? 0) + 1);
+    losses.set(loser, (losses.get(loser) ?? 0) + 1);
+    streaks.set(winner, (streaks.get(winner) ?? 0) + 1);
+    streaks.set(loser, 0);
+    // A probe that didn't move the placer consumes its streak — otherwise an
+    // unbeaten champion would stay provisional forever and monopolize
+    // matchmaking with no-op probes.
+    if (placer !== null && !placerMoved) streaks.set(placer, 0);
+    saveStats(this.stats);
+    appendHistory({ t: Date.now(), a: this.pair[0], b: this.pair[1], w: winner, p: placer });
     this.battleCount++;
     this.updateCount();
 
@@ -118,7 +130,7 @@ export class Battle {
     // fitted from simulations of the placement+Elo scheme on 38 movies
     // (error ≈ 11.5·e^(−total/170)). Drags/adopts count via persisted stats.
     let total = 0;
-    for (const c of this.counts.values()) total += c;
+    for (const c of this.stats.counts.values()) total += c;
     total = Math.floor(total / 2);
     if (total >= 10) {
       const wiggle = Math.round(11.5 * Math.exp(-total / 170));

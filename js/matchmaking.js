@@ -3,28 +3,34 @@
 // While any movie is provisional (see elo.js), matchmaking runs its placement:
 // the least-battled provisional movie probes binary-search style — first
 // against the median, then halfway toward the top while it keeps winning, or
-// halfway toward the bottom once it has lost. Afterwards, refinement pairs
-// movies with similar current ratings (high information) and few past battles,
-// with a bit of injected randomness so sessions don't feel deterministic.
+// halfway toward the bottom once it has lost. An established movie on a win
+// streak re-enters placement with upward probes, so nothing stays exiled.
+//
+// Afterwards, refinement pairs movies with similar current ratings (high
+// information) and few past battles, biased toward the top of the ranking —
+// that's the part of the list people actually care about — with a bit of
+// injected randomness so sessions don't feel deterministic.
 
-import { isProvisional } from './elo.js';
+import { isProvisional, REPLACE_STREAK } from './elo.js';
 
 const WINDOW = 5; // how many rating-neighbors each movie is considered against
 const COUNT_PENALTY = 18; // rating-points-equivalent cost per past battle
+const RANK_BIAS = 3; // rating-points-equivalent cost per rank away from the top
 const TOP_POOL = 5; // pick uniformly among this many best candidates
 const JITTER = 2; // ± ranks of noise on a placement probe target
 
 const samePair = (a, b) => b && new Set(b).has(a[0]) && new Set(b).has(a[1]);
 
-// ids: rankable movie ids; ratings: Map(id → rating); counts/losses:
-// Map(id → n); lastPair: [idA, idB] or null; rng: () => [0,1).
+// ids: rankable movie ids; ratings: Map(id → rating); stats: {counts, losses,
+// streaks} Maps; lastPair: [idA, idB] or null; rng: () => [0,1).
 // Returns [idA, idB] or null.
-export function pickPair(ids, ratings, counts, losses, lastPair, rng) {
+export function pickPair(ids, ratings, stats, lastPair, rng) {
   if (ids.length < 2) return null;
+  const { counts, losses, streaks } = stats;
   const order = [...ids].sort((a, b) => ratings.get(b) - ratings.get(a));
 
   const provisionals = ids.filter(id =>
-    isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0));
+    isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0, streaks.get(id) ?? 0));
   if (provisionals.length) {
     const minCount = Math.min(...provisionals.map(id => counts.get(id) ?? 0));
     const pool = provisionals.filter(id => (counts.get(id) ?? 0) === minCount);
@@ -32,9 +38,10 @@ export function pickPair(ids, ratings, counts, losses, lastPair, rng) {
 
     const n = order.length;
     const r = order.indexOf(placer);
+    const probeUp = (losses.get(placer) ?? 0) === 0 || (streaks.get(placer) ?? 0) >= REPLACE_STREAK;
     let target;
     if ((counts.get(placer) ?? 0) === 0) target = Math.floor(n / 2);
-    else if ((losses.get(placer) ?? 0) === 0) target = Math.floor(r / 2);
+    else if (probeUp) target = Math.floor(r / 2);
     else target = Math.floor((r + n) / 2);
     target += Math.floor(rng() * (2 * JITTER + 1)) - JITTER;
     target = Math.max(0, Math.min(n - 1, target));
@@ -58,7 +65,8 @@ export function pickPair(ids, ratings, counts, losses, lastPair, rng) {
       if (samePair([a, b], lastPair)) continue;
       const score =
         Math.abs(ratings.get(a) - ratings.get(b)) +
-        COUNT_PENALTY * ((counts.get(a) ?? 0) + (counts.get(b) ?? 0));
+        COUNT_PENALTY * ((counts.get(a) ?? 0) + (counts.get(b) ?? 0)) +
+        RANK_BIAS * (i + j) / 2;
       candidates.push({ pair: [a, b], score });
     }
   }
@@ -74,9 +82,11 @@ export function pickPair(ids, ratings, counts, losses, lastPair, rng) {
 // Which side of a pair (if any) takes the placement jump instead of an Elo
 // update: the provisional one; if both are provisional, the lower-count one,
 // ties broken toward the lower-rated.
-export function pickPlacer(pair, ratings, counts, losses) {
+export function pickPlacer(pair, ratings, stats) {
+  const { counts, losses, streaks } = stats;
   const [a, b] = pair;
-  const prov = id => isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0);
+  const prov = id =>
+    isProvisional(counts.get(id) ?? 0, losses.get(id) ?? 0, streaks.get(id) ?? 0);
   const [pa, pb] = [prov(a), prov(b)];
   if (!pa && !pb) return null;
   if (pa !== pb) return pa ? a : b;

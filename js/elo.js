@@ -15,8 +15,15 @@ export const K = 48;
 export const MIN_PLACE = 2;
 export const MAX_PLACE = 5;
 
-export function isProvisional(count, lossCount) {
-  return count < MIN_PLACE || (lossCount === 0 && count < MAX_PLACE);
+// An established movie that wins this many battles in a row earns placement
+// again (an upward probe): one mistaken vote during placement can no longer
+// exile a movie permanently, since sustained winning restores its mobility.
+export const REPLACE_STREAK = 3;
+
+export function isProvisional(count, lossCount, winStreak = 0) {
+  return count < MIN_PLACE
+    || (lossCount === 0 && count < MAX_PLACE)
+    || winStreak >= REPLACE_STREAK;
 }
 
 // Positional jump for a provisional movie: land just beside the opponent.

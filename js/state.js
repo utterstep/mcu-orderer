@@ -30,27 +30,57 @@ export function loadLocal() {
   }
 }
 
-// Per-movie battle statistics (battle count + loss count), persisted so a
-// reload doesn't make every movie provisional again and re-trigger placement
-// jumps on an already-settled ranking. Not part of the shareable fragment.
+// Per-movie battle statistics (battle count, loss count, current win streak),
+// persisted so a reload doesn't make every movie provisional again and
+// re-trigger placement jumps on an already-settled ranking. Not part of the
+// shareable fragment.
 export function loadStats() {
   const counts = new Map();
   const losses = new Map();
+  const streaks = new Map();
   try {
     const raw = JSON.parse(localStorage.getItem(STATS_KEY));
     for (let id = 0; id < CATALOG_SIZE; id++) {
       counts.set(id, Number(raw?.c?.[id]) || 0);
       losses.set(id, Number(raw?.l?.[id]) || 0);
+      streaks.set(id, Number(raw?.s?.[id]) || 0);
     }
   } catch { /* fall through to zeroed maps */ }
-  return { counts, losses };
+  return { counts, losses, streaks };
 }
 
-export function saveStats(counts, losses) {
+export function saveStats({ counts, losses, streaks }) {
   const arr = map => Array.from({ length: CATALOG_SIZE }, (_, id) => map.get(id) ?? 0);
   try {
-    localStorage.setItem(STATS_KEY, JSON.stringify({ c: arr(counts), l: arr(losses) }));
+    localStorage.setItem(STATS_KEY,
+      JSON.stringify({ c: arr(counts), l: arr(losses), s: arr(streaks) }));
   } catch { /* private mode etc. */ }
+}
+
+// Full vote history for debugging (see ?debug): one entry per battle, capped.
+// {t: epoch ms, a, b: the pair as displayed, w: winner id, p: placer id|null}
+const HISTORY_KEY = 'mcu-orderer:history:v1';
+const HISTORY_CAP = 1000;
+
+export function loadHistory() {
+  try {
+    const h = JSON.parse(localStorage.getItem(HISTORY_KEY));
+    return Array.isArray(h) ? h : [];
+  } catch {
+    return [];
+  }
+}
+
+export function appendHistory(entry) {
+  const history = loadHistory();
+  history.push(entry);
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-HISTORY_CAP)));
+  } catch { /* private mode etc. */ }
+}
+
+export function clearHistory() {
+  try { localStorage.removeItem(HISTORY_KEY); } catch { /* ignore */ }
 }
 
 export function readFragment() {

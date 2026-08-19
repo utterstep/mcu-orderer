@@ -1,6 +1,9 @@
 import { MOVIES, CATALOG_SIZE } from './movies.js';
 import { MAX_PLACE } from './elo.js';
-import { Store, pristineState, statesEqual, loadLocal, readFragment, saveStats } from './state.js';
+import {
+  Store, pristineState, statesEqual, loadLocal, readFragment, saveStats, clearHistory,
+} from './state.js';
+import { initDebug } from './debug.js';
 import { Battle } from './battle.js';
 import { RankingList } from './list.js';
 
@@ -62,7 +65,12 @@ if (viewing) {
     // The adopted order was deliberate: mark every movie as already placed so
     // subsequent battles refine it gently instead of teleporting entries.
     const ids = [...Array(CATALOG_SIZE).keys()];
-    saveStats(new Map(ids.map(id => [id, MAX_PLACE])), new Map(ids.map(id => [id, 1])));
+    saveStats({
+      counts: new Map(ids.map(id => [id, MAX_PLACE])),
+      losses: new Map(ids.map(id => [id, 1])),
+      streaks: new Map(),
+    });
+    clearHistory();
     location.reload(); // reboots into normal editing mode (fragment == local)
   });
   forkOwn.addEventListener('click', () => {
@@ -121,4 +129,6 @@ if (viewing) {
     if (e.key === 'ArrowLeft') battle.vote(0);
     else if (e.key === 'ArrowRight') battle.vote(1);
   });
+
+  if (new URLSearchParams(location.search).has('debug')) initDebug({ store, battle });
 }
